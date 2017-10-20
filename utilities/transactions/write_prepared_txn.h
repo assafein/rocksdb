@@ -45,16 +45,28 @@ class WritePreparedTxn : public PessimisticTransaction {
 
   virtual ~WritePreparedTxn() {}
 
-  Status CommitBatch(WriteBatch* batch) override;
+  using Transaction::Get;
+  virtual Status Get(const ReadOptions& options,
+                     ColumnFamilyHandle* column_family, const Slice& key,
+                     PinnableSlice* value) override;
 
-  Status Rollback() override;
+  using Transaction::GetIterator;
+  virtual Iterator* GetIterator(const ReadOptions& options) override;
+  virtual Iterator* GetIterator(const ReadOptions& options,
+                                ColumnFamilyHandle* column_family) override;
 
  private:
+  friend class WritePreparedTransactionTest_BasicRecoveryTest_Test;
+
   Status PrepareInternal() override;
 
   Status CommitWithoutPrepareInternal() override;
 
+  Status CommitBatchInternal(WriteBatch* batch) override;
+
   Status CommitInternal() override;
+
+  Status RollbackInternal() override;
 
   // TODO(myabandeh): verify that the current impl work with values being
   // written with prepare sequence number too.
@@ -68,7 +80,6 @@ class WritePreparedTxn : public PessimisticTransaction {
   void operator=(const WritePreparedTxn&);
 
   WritePreparedTxnDB* wpt_db_;
-  uint64_t prepare_seq_;
 };
 
 }  // namespace rocksdb

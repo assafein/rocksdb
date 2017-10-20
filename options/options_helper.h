@@ -42,6 +42,9 @@ static std::map<CompactionStopStyle, std::string>
         {kCompactionStopStyleSimilarSize, "kCompactionStopStyleSimilarSize"},
         {kCompactionStopStyleTotalSize, "kCompactionStopStyleTotalSize"}};
 
+static std::unordered_map<std::string, ChecksumType> checksum_type_string_map =
+    {{"kNoChecksum", kNoChecksum}, {"kCRC32c", kCRC32c}, {"kxxHash", kxxHash}};
+
 #ifndef ROCKSDB_LITE
 
 Status GetMutableOptionsFromStrings(
@@ -79,6 +82,7 @@ enum class OptionType {
   kComparator,
   kCompactionFilter,
   kCompactionFilterFactory,
+  kCompactionOptionsFIFO,
   kMergeOperator,
   kMemTableRepFactory,
   kBlockBasedTableIndexType,
@@ -94,15 +98,17 @@ enum class OptionType {
 
 enum class OptionVerificationType {
   kNormal,
-  kByName,           // The option is pointer typed so we can only verify
-                     // based on it's name.
-  kByNameAllowNull,  // Same as kByName, but it also allows the case
-                     // where one of them is a nullptr.
-  kDeprecated        // The option is no longer used in rocksdb. The RocksDB
-                     // OptionsParser will still accept this option if it
-                     // happen to exists in some Options file.  However, the
-                     // parser will not include it in serialization and
-                     // verification processes.
+  kByName,               // The option is pointer typed so we can only verify
+                         // based on it's name.
+  kByNameAllowNull,      // Same as kByName, but it also allows the case
+                         // where one of them is a nullptr.
+  kByNameAllowFromNull,  // Same as kByName, but it also allows the case
+                         // where the old option is nullptr.
+  kDeprecated            // The option is no longer used in rocksdb. The RocksDB
+                         // OptionsParser will still accept this option if it
+                         // happen to exists in some Options file.  However,
+                         // the parser will not include it in serialization
+                         // and verification processes.
 };
 
 // A struct for storing constant option information such as option name,
@@ -283,7 +289,8 @@ static std::unordered_map<std::string, OptionTypeInfo> db_options_type_info = {
       OptionVerificationType::kNormal, false, 0}},
     {"bytes_per_sync",
      {offsetof(struct DBOptions, bytes_per_sync), OptionType::kUInt64T,
-      OptionVerificationType::kNormal, false, 0}},
+      OptionVerificationType::kNormal, true,
+      offsetof(struct MutableDBOptions, bytes_per_sync)}},
     {"delayed_write_rate",
      {offsetof(struct DBOptions, delayed_write_rate), OptionType::kUInt64T,
       OptionVerificationType::kNormal, true,
@@ -301,7 +308,8 @@ static std::unordered_map<std::string, OptionTypeInfo> db_options_type_info = {
       offsetof(struct MutableDBOptions, max_total_wal_size)}},
     {"wal_bytes_per_sync",
      {offsetof(struct DBOptions, wal_bytes_per_sync), OptionType::kUInt64T,
-      OptionVerificationType::kNormal, false, 0}},
+      OptionVerificationType::kNormal, true,
+      offsetof(struct MutableDBOptions, wal_bytes_per_sync)}},
     {"stats_dump_period_sec",
      {offsetof(struct DBOptions, stats_dump_period_sec), OptionType::kUInt,
       OptionVerificationType::kNormal, true,
@@ -354,7 +362,11 @@ static std::unordered_map<std::string, OptionTypeInfo> db_options_type_info = {
     {"manual_wal_flush",
      {offsetof(struct DBOptions, manual_wal_flush), OptionType::kBoolean,
       OptionVerificationType::kNormal, false,
-      offsetof(struct ImmutableDBOptions, manual_wal_flush)}}};
+      offsetof(struct ImmutableDBOptions, manual_wal_flush)}},
+    {"seq_per_batch",
+     {offsetof(struct DBOptions, seq_per_batch), OptionType::kBoolean,
+      OptionVerificationType::kNormal, false,
+      offsetof(struct ImmutableDBOptions, seq_per_batch)}}};
 
 // offset_of is used to get the offset of a class data member
 // ex: offset_of(&ColumnFamilyOptions::num_levels)
@@ -414,7 +426,7 @@ static std::unordered_map<std::string, OptionTypeInfo> cf_options_type_info = {
       OptionType::kBoolean, OptionVerificationType::kNormal, false, 0}},
     {"purge_redundant_kvs_while_flush",
      {offset_of(&ColumnFamilyOptions::purge_redundant_kvs_while_flush),
-      OptionType::kBoolean, OptionVerificationType::kNormal, false, 0}},
+      OptionType::kBoolean, OptionVerificationType::kDeprecated, false, 0}},
     {"verify_checksums_in_compaction",
      {0, OptionType::kBoolean, OptionVerificationType::kDeprecated, true, 0}},
     {"soft_pending_compaction_bytes_limit",
@@ -569,13 +581,33 @@ static std::unordered_map<std::string, OptionTypeInfo> cf_options_type_info = {
       false, 0}},
     {"merge_operator",
      {offset_of(&ColumnFamilyOptions::merge_operator),
-      OptionType::kMergeOperator, OptionVerificationType::kByName, false, 0}},
+      OptionType::kMergeOperator, OptionVerificationType::kByNameAllowFromNull,
+      false, 0}},
     {"compaction_style",
      {offset_of(&ColumnFamilyOptions::compaction_style),
       OptionType::kCompactionStyle, OptionVerificationType::kNormal, false, 0}},
     {"compaction_pri",
      {offset_of(&ColumnFamilyOptions::compaction_pri),
-      OptionType::kCompactionPri, OptionVerificationType::kNormal, false, 0}}};
+      OptionType::kCompactionPri, OptionVerificationType::kNormal, false, 0}},
+    {"compaction_options_fifo",
+     {offset_of(&ColumnFamilyOptions::compaction_options_fifo),
+      OptionType::kCompactionOptionsFIFO, OptionVerificationType::kNormal, true,
+      offsetof(struct MutableCFOptions, compaction_options_fifo)}}};
+
+static std::unordered_map<std::string, OptionTypeInfo>
+    fifo_compaction_options_type_info = {
+        {"max_table_files_size",
+         {offset_of(&CompactionOptionsFIFO::max_table_files_size),
+          OptionType::kUInt64T, OptionVerificationType::kNormal, true,
+          offsetof(struct CompactionOptionsFIFO, max_table_files_size)}},
+        {"ttl",
+         {offset_of(&CompactionOptionsFIFO::ttl), OptionType::kUInt64T,
+          OptionVerificationType::kNormal, true,
+          offsetof(struct CompactionOptionsFIFO, ttl)}},
+        {"allow_compaction",
+         {offset_of(&CompactionOptionsFIFO::allow_compaction),
+          OptionType::kBoolean, OptionVerificationType::kNormal, true,
+          offsetof(struct CompactionOptionsFIFO, allow_compaction)}}};
 
 static std::unordered_map<std::string, CompressionType>
     compression_type_string_map = {
@@ -599,9 +631,6 @@ static std::unordered_map<std::string, BlockBasedTableOptions::IndexType>
 
 static std::unordered_map<std::string, EncodingType> encoding_type_string_map =
     {{"kPlain", kPlain}, {"kPrefix", kPrefix}};
-
-static std::unordered_map<std::string, ChecksumType> checksum_type_string_map =
-    {{"kNoChecksum", kNoChecksum}, {"kCRC32c", kCRC32c}, {"kxxHash", kxxHash}};
 
 static std::unordered_map<std::string, CompactionStyle>
     compaction_style_string_map = {

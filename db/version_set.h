@@ -35,6 +35,7 @@
 #include "db/file_indexer.h"
 #include "db/log_reader.h"
 #include "db/range_del_aggregator.h"
+#include "db/read_callback.h"
 #include "db/table_cache.h"
 #include "db/version_builder.h"
 #include "db/version_edit.h"
@@ -485,7 +486,8 @@ class Version {
   void Get(const ReadOptions&, const LookupKey& key, PinnableSlice* value,
            Status* status, MergeContext* merge_context,
            RangeDelAggregator* range_del_agg, bool* value_found = nullptr,
-           bool* key_exists = nullptr, SequenceNumber* seq = nullptr);
+           bool* key_exists = nullptr, SequenceNumber* seq = nullptr,
+           ReadCallback* callback = nullptr, bool* is_blob = nullptr);
 
   // Loads some stats information from files. Call without mutex held. It needs
   // to be called before applying the version to the version set.
@@ -724,8 +726,8 @@ class VersionSet {
   }
 
   // Mark the specified file number as used.
-  // REQUIRED: this is only called during single-threaded recovery
-  void MarkFileNumberUsedDuringRecovery(uint64_t number);
+  // REQUIRED: this is only called during single-threaded recovery or repair.
+  void MarkFileNumberUsed(uint64_t number);
 
   // Return the log file number for the log file that is currently
   // being compacted, or zero if there is no such log file.

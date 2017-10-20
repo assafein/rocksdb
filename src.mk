@@ -166,7 +166,7 @@ LIB_SOURCES =                                                   \
   utilities/compaction_filters/remove_emptyvalue_compactionfilter.cc    \
   utilities/convenience/info_log_finder.cc                      \
   utilities/date_tiered/date_tiered_db_impl.cc                  \
-  utilities/debug.cc                                        	\
+  utilities/debug.cc                                            \
   utilities/document/document_db.cc                             \
   utilities/document/json_document.cc                           \
   utilities/document/json_document_builder.cc                   \
@@ -193,17 +193,28 @@ LIB_SOURCES =                                                   \
   utilities/spatialdb/spatial_db.cc                             \
   utilities/table_properties_collectors/compact_on_deletion_collector.cc \
   utilities/transactions/optimistic_transaction_db_impl.cc      \
-  utilities/transactions/optimistic_transaction.cc         \
+  utilities/transactions/optimistic_transaction.cc              \
+  utilities/transactions/pessimistic_transaction.cc             \
+  utilities/transactions/pessimistic_transaction_db.cc          \
+  utilities/transactions/snapshot_checker.cc                    \
   utilities/transactions/transaction_base.cc                    \
-  utilities/transactions/pessimistic_transaction_db.cc                 \
   utilities/transactions/transaction_db_mutex_impl.cc           \
-  utilities/transactions/pessimistic_transaction.cc                    \
   utilities/transactions/transaction_lock_mgr.cc                \
   utilities/transactions/transaction_util.cc                    \
-  utilities/transactions/write_prepared_txn.cc     \
+  utilities/transactions/write_prepared_txn.cc                  \
   utilities/ttl/db_ttl_impl.cc                                  \
   utilities/write_batch_with_index/write_batch_with_index.cc    \
   utilities/write_batch_with_index/write_batch_with_index_internal.cc    \
+
+ifeq (,$(shell $(CXX) -fsyntax-only -maltivec -xc /dev/null 2>&1))
+LIB_SOURCES_ASM =\
+  util/crc32c_ppc_asm.S
+LIB_SOURCES_C = \
+  util/crc32c_ppc.c
+else
+LIB_SOURCES_ASM =
+LIB_SOURCES_C =
+endif
 
 TOOL_LIB_SOURCES = \
   tools/ldb_cmd.cc                                               \
@@ -301,6 +312,7 @@ MAIN_SOURCES =                                                    \
   options/options_test.cc                                               \
   table/block_based_filter_block_test.cc                                \
   table/block_test.cc                                                   \
+  table/cleanable_test.cc                                               \
   table/cuckoo_table_builder_test.cc                                    \
   table/cuckoo_table_reader_test.cc                                     \
   table/full_filter_block_test.cc                                       \
@@ -325,6 +337,7 @@ MAIN_SOURCES =                                                    \
   util/filelock_test.cc                                                 \
   util/log_write_bench.cc                                               \
   util/rate_limiter_test.cc                                             \
+  util/slice_test.cc                                                    \
   util/slice_transform_test.cc                                          \
   util/timer_queue_test.cc                                              \
   util/thread_list_test.cc                                              \
@@ -354,6 +367,7 @@ MAIN_SOURCES =                                                    \
   utilities/table_properties_collectors/compact_on_deletion_collector_test.cc  \
   utilities/transactions/optimistic_transaction_test.cc                 \
   utilities/transactions/transaction_test.cc                            \
+  utilities/transactions/write_prepared_transaction_test.cc             \
   utilities/ttl/ttl_test.cc                                             \
   utilities/write_batch_with_index/write_batch_with_index_test.cc       \
 
@@ -364,6 +378,8 @@ JNI_NATIVE_SOURCES =                                          \
   java/rocksjni/clock_cache.cc                                \
   java/rocksjni/columnfamilyhandle.cc                         \
   java/rocksjni/compaction_filter.cc                          \
+  java/rocksjni/compaction_filter_factory.cc                  \
+  java/rocksjni/compaction_filter_factory_jnicallback.cc      \
   java/rocksjni/compaction_options_fifo.cc                    \
   java/rocksjni/compaction_options_universal.cc               \
   java/rocksjni/comparator.cc                                 \
@@ -374,15 +390,19 @@ JNI_NATIVE_SOURCES =                                          \
   java/rocksjni/ingest_external_file_options.cc               \
   java/rocksjni/filter.cc                                     \
   java/rocksjni/iterator.cc                                   \
+  java/rocksjni/jnicallback.cc                                \
   java/rocksjni/loggerjnicallback.cc                          \
   java/rocksjni/lru_cache.cc                                  \
   java/rocksjni/memtablejni.cc                                \
   java/rocksjni/merge_operator.cc                             \
   java/rocksjni/options.cc                                    \
+  java/rocksjni/options_util.cc                               \
   java/rocksjni/ratelimiterjni.cc                             \
   java/rocksjni/remove_emptyvalue_compactionfilterjni.cc      \
   java/rocksjni/cassandra_compactionfilterjni.cc              \
+  java/rocksjni/cassandra_value_operator.cc                   \
   java/rocksjni/restorejni.cc                                 \
+  java/rocksjni/rocks_callback_object.cc                      \
   java/rocksjni/rocksjni.cc                                   \
   java/rocksjni/rocksdb_exception_test.cc                     \
   java/rocksjni/slice.cc                                      \

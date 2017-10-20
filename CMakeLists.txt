@@ -32,7 +32,7 @@
 # 3. cmake ..
 # 4. make -j
 
-cmake_minimum_required(VERSION 2.6)
+cmake_minimum_required(VERSION 2.8.12)
 project(rocksdb)
 
 if(POLICY CMP0042)
@@ -98,17 +98,7 @@ else()
   endif()
 endif()
 
-if(WIN32)
-  execute_process(COMMAND powershell -noprofile -Command "Get-Date -format MM_dd_yyyy" OUTPUT_VARIABLE DATE)
-  execute_process(COMMAND powershell -noprofile -Command "Get-Date -format HH:mm:ss" OUTPUT_VARIABLE TIME)
-  string(REGEX REPLACE "(..)_(..)_..(..).*" "\\1/\\2/\\3" DATE "${DATE}")
-  string(REGEX REPLACE "(..):(.....).*" " \\1:\\2" TIME "${TIME}")
-  set(GIT_DATE_TIME "${DATE} ${TIME}")
-else()
-  execute_process(COMMAND date "+%Y/%m/%d %H:%M:%S" OUTPUT_VARIABLE DATETIME)
-  string(REGEX REPLACE "\n" "" DATETIME ${DATETIME})
-  set(GIT_DATE_TIME "${DATETIME}")
-endif()
+string(TIMESTAMP GIT_DATE_TIME "%Y/%m/%d %H:%M:%S" UTC)
 
 find_package(Git)
 
@@ -155,10 +145,10 @@ target_include_directories(build_version PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/util)
 if(MSVC)
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /Zi /nologo /EHsc /GS /Gd /GR /GF /fp:precise /Zc:wchar_t /Zc:forScope /errorReport:queue")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FC /d2Zi+ /W3 /wd4127 /wd4800 /wd4996 /wd4351")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /FC /d2Zi+ /W4 /wd4127 /wd4800 /wd4996 /wd4351 /wd4100 /wd4204 /wd4324")
 else()
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -W -Wextra -Wall")
-  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wsign-compare -Wshadow -Wno-unused-parameter -Wno-unused-variable -Woverloaded-virtual -Wnon-virtual-dtor -Wno-missing-field-initializers")
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wsign-compare -Wshadow -Wno-unused-parameter -Wno-unused-variable -Woverloaded-virtual -Wnon-virtual-dtor -Wno-missing-field-initializers -Wno-strict-aliasing")
   if(MINGW)
     set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-format")
   endif()
@@ -189,8 +179,10 @@ else()
   endif()
 endif()
 
-set(CMAKE_REQUIRED_FLAGS ${CMAKE_CXX_FLAGS})
 include(CheckCXXSourceCompiles)
+if(NOT MSVC)
+  set(CMAKE_REQUIRED_FLAGS "-msse4.2")
+endif()
 CHECK_CXX_SOURCE_COMPILES("
 #include <cstdint>
 #include <nmmintrin.h>
@@ -198,6 +190,7 @@ int main() {
   volatile uint32_t x = _mm_crc32_u32(0, 0);
 }
 " HAVE_SSE42)
+unset(CMAKE_REQUIRED_FLAGS)
 if(HAVE_SSE42)
   add_definitions(-DHAVE_SSE42)
 elseif(FORCE_SSE42)
@@ -553,10 +546,11 @@ set(SOURCES
         utilities/table_properties_collectors/compact_on_deletion_collector.cc
         utilities/transactions/optimistic_transaction_db_impl.cc
         utilities/transactions/optimistic_transaction.cc
-        utilities/transactions/transaction_base.cc
-        utilities/transactions/pessimistic_transaction_db.cc
-        utilities/transactions/transaction_db_mutex_impl.cc
         utilities/transactions/pessimistic_transaction.cc
+        utilities/transactions/pessimistic_transaction_db.cc
+        utilities/transactions/snapshot_checker.cc
+        utilities/transactions/transaction_base.cc
+        utilities/transactions/transaction_db_mutex_impl.cc
         utilities/transactions/transaction_lock_mgr.cc
         utilities/transactions/transaction_util.cc
         utilities/transactions/write_prepared_txn.cc
@@ -564,6 +558,14 @@ set(SOURCES
         utilities/write_batch_with_index/write_batch_with_index.cc
         utilities/write_batch_with_index/write_batch_with_index_internal.cc
         $<TARGET_OBJECTS:build_version>)
+
+if(HAVE_SSE42 AND NOT FORCE_SSE42)
+  if(NOT MSVC)
+set_source_files_properties(
+  util/crc32c.cc
+      PROPERTIES COMPILE_FLAGS "-msse4.2")
+  endif()
+endif()
 
 if(WIN32)
   list(APPEND SOURCES
@@ -648,14 +650,59 @@ if(NOT WIN32 OR ROCKSDB_INSTALL_ON_WINDOWS)
   endif()
 
   include(GNUInstallDirs)
-  install(TARGETS ${ROCKSDB_STATIC_LIB} COMPONENT devel ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  install(TARGETS ${ROCKSDB_SHARED_LIB} COMPONENT runtime DESTINATION ${CMAKE_INSTALL_LIBDIR})
-  install(DIRECTORY include/rocksdb COMPONENT devel DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+  include(CMakePackageConfigHelpers)
+
+  set(package_config_destination ${CMAKE_INSTALL_LIBDIR}/cmake/rocksdb)
+
+  configure_package_config_file(
+    ${CMAKE_SOURCE_DIR}/cmake/RocksDBConfig.cmake.in RocksDBConfig.cmake
+    INSTALL_DESTINATION ${package_config_destination}
+  )
+
+  write_basic_package_version_file(
+    RocksDBConfigVersion.cmake
+    VERSION ${ROCKSDB_VERSION}
+    COMPATIBILITY SameMajorVersion
+  )
+
+  install(DIRECTORY include/rocksdb COMPONENT devel DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}")
+
+  install(
+    TARGETS ${ROCKSDB_STATIC_LIB}
+    EXPORT RocksDBTargets
+    COMPONENT devel
+    ARCHIVE DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  )
+
+  install(
+    TARGETS ${ROCKSDB_SHARED_LIB}
+    EXPORT RocksDBTargets
+    COMPONENT runtime
+    RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}"
+    LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+    INCLUDES DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
+  )
+
+  install(
+    EXPORT RocksDBTargets
+    COMPONENT devel
+    DESTINATION ${package_config_destination}
+    NAMESPACE RocksDB::
+  )
+
+  install(
+    FILES
+    ${CMAKE_CURRENT_BINARY_DIR}/RocksDBConfig.cmake
+    ${CMAKE_CURRENT_BINARY_DIR}/RocksDBConfigVersion.cmake
+    COMPONENT devel
+    DESTINATION ${package_config_destination}
+  )
 endif()
 
 option(WITH_TESTS "build with tests" ON)
 if(WITH_TESTS)
-set(TESTS
+  set(TESTS
         cache/cache_test.cc
         cache/lru_cache_test.cc
         db/column_family_test.cc
@@ -668,6 +715,7 @@ set(TESTS
         db/corruption_test.cc
         db/cuckoo_table_db_test.cc
         db/db_basic_test.cc
+        db/db_blob_index_test.cc
         db/db_block_cache_test.cc
         db/db_bloom_filter_test.cc
         db/db_compaction_filter_test.cc
@@ -733,6 +781,7 @@ set(TESTS
         options/options_test.cc
         table/block_based_filter_block_test.cc
         table/block_test.cc
+        table/cleanable_test.cc
         table/cuckoo_table_builder_test.cc
         table/cuckoo_table_reader_test.cc
         table/full_filter_block_test.cc
@@ -755,6 +804,7 @@ set(TESTS
         util/hash_test.cc
         util/heap_test.cc
         util/rate_limiter_test.cc
+        util/slice_test.cc
         util/slice_transform_test.cc
         util/timer_queue_test.cc
         util/thread_list_test.cc
@@ -785,87 +835,88 @@ set(TESTS
         utilities/table_properties_collectors/compact_on_deletion_collector_test.cc
         utilities/transactions/optimistic_transaction_test.cc
         utilities/transactions/transaction_test.cc
+        utilities/transactions/write_prepared_transaction_test.cc
         utilities/ttl/ttl_test.cc
         utilities/write_batch_with_index/write_batch_with_index_test.cc
-)
-if(WITH_LIBRADOS)
-  list(APPEND TESTS utilities/env_librados_test.cc)
-endif()
+  )
+  if(WITH_LIBRADOS)
+    list(APPEND TESTS utilities/env_librados_test.cc)
+  endif()
 
-set(BENCHMARKS
-  cache/cache_bench.cc
-  memtable/memtablerep_bench.cc
-  tools/db_bench.cc
-  table/table_reader_bench.cc
-  utilities/column_aware_encoding_exp.cc
-  utilities/persistent_cache/hash_table_bench.cc)
-add_library(testharness OBJECT util/testharness.cc)
-foreach(sourcefile ${BENCHMARKS})
-  get_filename_component(exename ${sourcefile} NAME_WE)
-  add_executable(${exename}${ARTIFACT_SUFFIX} ${sourcefile}
-    $<TARGET_OBJECTS:testharness>)
-  target_link_libraries(${exename}${ARTIFACT_SUFFIX} gtest ${LIBS})
-endforeach(sourcefile ${BENCHMARKS})
-
-# For test util library that is build only in DEBUG mode
-# and linked to tests. Add test only code that is not #ifdefed for Release here.
-set(TESTUTIL_SOURCE
-    db/db_test_util.cc
-    monitoring/thread_status_updater_debug.cc
-    table/mock_table.cc
-    util/fault_injection_test_env.cc
-    utilities/cassandra/test_utils.cc
-)
-# test utilities are only build in debug
-enable_testing()
-add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND})
-set(TESTUTILLIB testutillib${ARTIFACT_SUFFIX})
-add_library(${TESTUTILLIB} STATIC ${TESTUTIL_SOURCE})
-if(MSVC)
-  set_target_properties(${TESTUTILLIB} PROPERTIES COMPILE_FLAGS "/Fd${CMAKE_CFG_INTDIR}/testutillib${ARTIFACT_SUFFIX}.pdb")
-endif()
-set_target_properties(${TESTUTILLIB}
-      PROPERTIES EXCLUDE_FROM_DEFAULT_BUILD_RELEASE 1
-      EXCLUDE_FROM_DEFAULT_BUILD_MINRELEASE 1
-      EXCLUDE_FROM_DEFAULT_BUILD_RELWITHDEBINFO 1
-      )
-
-# Tests are excluded from Release builds
-set(TEST_EXES ${TESTS})
-
-foreach(sourcefile ${TEST_EXES})
+  set(BENCHMARKS
+    cache/cache_bench.cc
+    memtable/memtablerep_bench.cc
+    tools/db_bench.cc
+    table/table_reader_bench.cc
+    utilities/column_aware_encoding_exp.cc
+    utilities/persistent_cache/hash_table_bench.cc)
+  add_library(testharness OBJECT util/testharness.cc)
+  foreach(sourcefile ${BENCHMARKS})
     get_filename_component(exename ${sourcefile} NAME_WE)
     add_executable(${exename}${ARTIFACT_SUFFIX} ${sourcefile}
       $<TARGET_OBJECTS:testharness>)
-    set_target_properties(${exename}${ARTIFACT_SUFFIX}
-      PROPERTIES EXCLUDE_FROM_DEFAULT_BUILD_RELEASE 1
-      EXCLUDE_FROM_DEFAULT_BUILD_MINRELEASE 1
-      EXCLUDE_FROM_DEFAULT_BUILD_RELWITHDEBINFO 1
-      )
-    target_link_libraries(${exename}${ARTIFACT_SUFFIX} testutillib${ARTIFACT_SUFFIX} gtest ${LIBS})
-    if(NOT "${exename}" MATCHES "db_sanity_test")
+    target_link_libraries(${exename}${ARTIFACT_SUFFIX} gtest ${LIBS})
+  endforeach(sourcefile ${BENCHMARKS})
+
+  # For test util library that is build only in DEBUG mode
+  # and linked to tests. Add test only code that is not #ifdefed for Release here.
+  set(TESTUTIL_SOURCE
+      db/db_test_util.cc
+      monitoring/thread_status_updater_debug.cc
+      table/mock_table.cc
+      util/fault_injection_test_env.cc
+      utilities/cassandra/test_utils.cc
+  )
+  # test utilities are only build in debug
+  enable_testing()
+  add_custom_target(check COMMAND ${CMAKE_CTEST_COMMAND})
+  set(TESTUTILLIB testutillib${ARTIFACT_SUFFIX})
+  add_library(${TESTUTILLIB} STATIC ${TESTUTIL_SOURCE})
+  if(MSVC)
+    set_target_properties(${TESTUTILLIB} PROPERTIES COMPILE_FLAGS "/Fd${CMAKE_CFG_INTDIR}/testutillib${ARTIFACT_SUFFIX}.pdb")
+  endif()
+  set_target_properties(${TESTUTILLIB}
+        PROPERTIES EXCLUDE_FROM_DEFAULT_BUILD_RELEASE 1
+        EXCLUDE_FROM_DEFAULT_BUILD_MINRELEASE 1
+        EXCLUDE_FROM_DEFAULT_BUILD_RELWITHDEBINFO 1
+        )
+
+  # Tests are excluded from Release builds
+  set(TEST_EXES ${TESTS})
+
+  foreach(sourcefile ${TEST_EXES})
+      get_filename_component(exename ${sourcefile} NAME_WE)
+      add_executable(${exename}${ARTIFACT_SUFFIX} ${sourcefile}
+        $<TARGET_OBJECTS:testharness>)
+      set_target_properties(${exename}${ARTIFACT_SUFFIX}
+        PROPERTIES EXCLUDE_FROM_DEFAULT_BUILD_RELEASE 1
+        EXCLUDE_FROM_DEFAULT_BUILD_MINRELEASE 1
+        EXCLUDE_FROM_DEFAULT_BUILD_RELWITHDEBINFO 1
+        )
+      target_link_libraries(${exename}${ARTIFACT_SUFFIX} testutillib${ARTIFACT_SUFFIX} gtest ${LIBS})
+      if(NOT "${exename}" MATCHES "db_sanity_test")
+        add_test(NAME ${exename} COMMAND ${exename}${ARTIFACT_SUFFIX})
+        add_dependencies(check ${exename}${ARTIFACT_SUFFIX})
+      endif()
+  endforeach(sourcefile ${TEST_EXES})
+
+  # C executables must link to a shared object
+  set(C_TESTS db/c_test.c)
+  set(C_TEST_EXES ${C_TESTS})
+
+  foreach(sourcefile ${C_TEST_EXES})
+      string(REPLACE ".c" "" exename ${sourcefile})
+      string(REGEX REPLACE "^((.+)/)+" "" exename ${exename})
+      add_executable(${exename}${ARTIFACT_SUFFIX} ${sourcefile})
+      set_target_properties(${exename}${ARTIFACT_SUFFIX}
+        PROPERTIES EXCLUDE_FROM_DEFAULT_BUILD_RELEASE 1
+        EXCLUDE_FROM_DEFAULT_BUILD_MINRELEASE 1
+        EXCLUDE_FROM_DEFAULT_BUILD_RELWITHDEBINFO 1
+        )
+      target_link_libraries(${exename}${ARTIFACT_SUFFIX} ${ROCKSDB_IMPORT_LIB} testutillib${ARTIFACT_SUFFIX})
       add_test(NAME ${exename} COMMAND ${exename}${ARTIFACT_SUFFIX})
       add_dependencies(check ${exename}${ARTIFACT_SUFFIX})
-    endif()
-endforeach(sourcefile ${TEST_EXES})
-
-# C executables must link to a shared object
-set(C_TESTS db/c_test.c)
-set(C_TEST_EXES ${C_TESTS})
-
-foreach(sourcefile ${C_TEST_EXES})
-    string(REPLACE ".c" "" exename ${sourcefile})
-    string(REGEX REPLACE "^((.+)/)+" "" exename ${exename})
-    add_executable(${exename}${ARTIFACT_SUFFIX} ${sourcefile})
-    set_target_properties(${exename}${ARTIFACT_SUFFIX}
-      PROPERTIES EXCLUDE_FROM_DEFAULT_BUILD_RELEASE 1
-      EXCLUDE_FROM_DEFAULT_BUILD_MINRELEASE 1
-      EXCLUDE_FROM_DEFAULT_BUILD_RELWITHDEBINFO 1
-      )
-    target_link_libraries(${exename}${ARTIFACT_SUFFIX} ${ROCKSDB_IMPORT_LIB} testutillib${ARTIFACT_SUFFIX})
-    add_test(NAME ${exename} COMMAND ${exename}${ARTIFACT_SUFFIX})
-    add_dependencies(check ${exename}${ARTIFACT_SUFFIX})
-endforeach(sourcefile ${C_TEST_EXES})
+  endforeach(sourcefile ${C_TEST_EXES})
 endif()
 
 option(WITH_TOOLS "build with tools" ON)
